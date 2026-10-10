@@ -1,0 +1,54 @@
+# ===== Anlogic TD IDE build output =====
+td_project/camera_to_dsi_display_Runs/
+td_project/**/Runs/
+td_project/**/impl/
+td_project/**/synthesis/
+td_project/**/par/
+td_project/**/*.rpt
+td_project/**/*.dcc
+td_project/**/*.dcc.genfile
+td_project/**/*.edy
+td_project/**/*.edf
+td_project/**/*.edi
+td_project/**/*.bit
+td_project/**/*.bin
+td_project/**/*.jm
+td_project/**/*.smh
+td_project/**/*.sdf
+
+# IDE logs
+*.log
+*.logw
+td_*.log
+td_*.logw
+build_*.log
+
+# IP tool backups / temp
+td_project/al_ip/.IpToolIpDataBackupDir*/
+**/.mti*.lib/
+**/infix_files/
+**/.Xil/
+
+# ===== iverilog / simulation =====
+*.vvp
+*.vcd
+*.fst
+*.ghw
+*.lxt
+*.lxt2
+*.cds.ds/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Dated diagnostic snapshots (regenerable)
+steel_ball_verification/pre_*/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/

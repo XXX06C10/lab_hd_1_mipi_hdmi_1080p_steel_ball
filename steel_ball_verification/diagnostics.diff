@@ -1,0 +1,216 @@
+--- before/user_source/hdl_source/steel_ball_detect.v
++++ after/user_source/hdl_source/steel_ball_detect.v
+@@ -31,7 +31,9 @@
+     output wire O_ball_detected,
+     output reg O_frame_done,
+     output reg O_frame_hit,
+-    output reg O_fault
++    output reg O_fault,
++    output reg O_bright,
++    output reg [1:0] O_error_code // first error since reset: 1 FIFO, 2 labels, 3 geometry
+ );
+     assign M_AXIS_tdata = S_AXIS_tdata;
+     assign M_AXIS_tvalid = S_AXIS_tvalid;
+@@ -85,8 +87,8 @@
+         end
+     end
+ 
+-    // Synchronous BRAM FIFO absorbs the ISP's line bursts. A sticky overflow
+-    // fails closed until reset: no silently dropped pixels may assert the LED.
++    // Synchronous BRAM FIFO absorbs line bursts. On overflow discard the
++    // damaged frame and restart at the NEXT input SOF, including its pixels.
+     reg [10:0] fifo[0:DEPTH-1];
+     reg [FIFO_BITS:0] wp,rp;
+     wire empty = wp==rp;
+@@ -102,14 +104,19 @@
+         ROOT_U=6, READ_A=7, SAVE_A=8, READ_B=9, WRITE=10,
+         ADVANCE=11, ENDLINE=12, EVAL_READ=13, EVAL_SAVE=14,
+         EVAL_MUL=15, EVAL_TEST=16, FRAME=17;
+-    wire pop = state==IDLE && !empty;
+-    always @(posedge I_clk) begin
+-        if(push && !full) fifo[wp[FIFO_BITS-1:0]] <= {meta2,mask2};
++    wire overflow_event = push && full && !O_fault;
++    wire recover_sof = O_fault && meta2[4];
++    wire pop = state==IDLE && !empty && !O_fault;
++    always @(posedge I_clk) begin
++        if(recover_sof || (push && !full && !O_fault))
++            fifo[recover_sof ? {FIFO_BITS{1'b0}} : wp[FIFO_BITS-1:0]] <= {meta2,mask2};
+         if(pop) fq <= fifo[rp[FIFO_BITS-1:0]];
+     end
+     always @(posedge I_clk or negedge I_rst_n) begin
+         if(!I_rst_n) begin wp<=0; rp<=0; O_fault<=0; end
+-        else begin
++        else if(recover_sof) begin wp<=1; rp<=0; O_fault<=0; end
++        else if(O_fault) begin wp<=0; rp<=0; end
++        else begin
+             if(push && !full) wp<=wp+1'b1;
+             if(pop) rp<=rp+1'b1;
+             if(push && full) O_fault<=1;
+@@ -130,7 +137,8 @@
+     reg [10:0] x,y;
+     wire [LABEL_BITS-1:0] above_q = above_word[x[3:0]*LABEL_BITS +: LABEL_BITS];
+     reg [11:0] line_pixels,lines;
+-    reg seen_frame,bad_frame,hit,ball;
++    reg seen_frame,bad_frame,hit,ball;
++    reg label_exhausted;
+     reg [7:0] streak;
+     assign O_ball_detected = ball && !O_fault;
+     reg [1:0] neighbors;
+@@ -192,20 +200,49 @@
+     reg [31:0] perimeter_squared;
+     reg [31:0] area100,area_circ,bbox_min,bbox_max;
+     reg [17:0] width100,height100,width_limit,height_limit;
+-    integer j;
+-    always @(posedge I_clk or negedge I_rst_n) begin
++    integer j;
++    // Input-side evidence remains available even when the CCL cannot keep up.
++    // Saturate after 80 bright pixels; do not mistake one hot pixel for a target.
++    reg [7:0] bright_count;
++    reg [2:0] bright_add;
++    integer n;
++    always @* begin
++        bright_add=0;
++        for(n=0;n<6;n=n+1)
++            if(n<meta2[2:0] && mask2[n]) bright_add=bright_add+1'b1;
++    end
++    always @(posedge I_clk or negedge I_rst_n) begin
++        if(!I_rst_n) begin bright_count<=0; O_bright<=0; O_error_code<=0; end
++        else begin
++            if(meta2[4]) begin
++                O_bright <= bright_count>=80;
++                bright_count <= {5'd0,bright_add};
++            end else if(bright_count<80) bright_count<=bright_count+bright_add;
++            if(O_error_code==0) begin
++                if(overflow_event) O_error_code<=1;
++                else if(state==EVAL_READ && eval_id==0) begin
++                    if(label_exhausted) O_error_code<=2;
++                    else if(bad_frame || lines!=IMG_HEIGHT || line_pixels!=0) O_error_code<=3;
++                end
++            end
++        end
++    end
++    always @(posedge I_clk or negedge I_rst_n) begin
+         if(!I_rst_n) begin
+             skip_token<=0; state<=IDLE; bits_left<=0; count_left<=0; token_eol<=0;
+             x<=0; y<=0; line_pixels<=0; lines<=0; left_label<=0;
+             a<=0; b<=0; root<=0; other<=0; next_label<=1;
+-            seen_frame<=0; bad_frame<=0; hit<=0; ball<=0; streak<=0;
++            seen_frame<=0; bad_frame<=0; hit<=0; ball<=0; streak<=0; label_exhausted<=0;
+             neighbors<=0; merging<=0; new_label<=0; sa<=0; eval_id<=1;
+             bw<=0; bh<=0; bbox<=0; perimeter_squared<=0;
+             area100<=0; area_circ<=0; bbox_min<=0; bbox_max<=0;
+             width100<=0; height100<=0; width_limit<=0; height_limit<=0;
+             O_frame_done<=0; O_frame_hit<=0;
+             for(j=0;j<LABELS;j=j+1) parent[j]<=j;
+-        end else begin
++        end else if(O_fault || overflow_event) begin
++            state<=IDLE; seen_frame<=0; ball<=0; streak<=0;
++            O_frame_done<=0; O_frame_hit<=0;
++        end else begin
+             O_frame_done<=0;
+             case(state)
+             IDLE: if(!empty) state<=TOKEN;
+@@ -221,7 +258,7 @@
+             end
+             SOF: begin
+                 x<=0; y<=0; line_pixels<=0; lines<=0; left_label<=0;
+-                next_label<=1; bad_frame<=0; seen_frame<=1;
++                next_label<=1; bad_frame<=0; seen_frame<=1; label_exhausted<=0;
+                 for(j=0;j<LABELS;j=j+1) parent[j]<=j;
+                 state <= (count_left!=0) ? PIX : ENDLINE;
+             end
+@@ -244,7 +281,7 @@
+                     new_label <= (a==0 && b==0);
+                     if(a==0 && b==0) begin
+                         if(next_label==LABELS) begin
+-                            bad_frame<=1; left_label<=0; state<=ADVANCE;
++                            bad_frame<=1; label_exhausted<=1; left_label<=0; state<=ADVANCE;
+                         end else begin
+                             root<=next_label[LABEL_BITS-1:0]; other<=0;
+                             next_label<=next_label+1'b1; state<=READ_A;
+@@ -332,4 +369,41 @@
+             end
+         end
+     end
+-endmodule
++endmodule
++
++// LED1 toggles every 15 input frames. LED3 reports the first error since
++// reset as 1/2/3 short flashes in a repeating 2-second group.
++module steel_ball_status_led #(
++    parameter TICK_CYCLES = 11251100,
++    parameter HEARTBEAT_FRAMES = 15
++)(
++    input wire I_clk, I_rst_n, I_sof,
++    input wire [1:0] I_error_code,
++    output reg O_heartbeat,
++    output wire O_error_led
++);
++    reg [23:0] tick_count;
++    reg [4:0] slot;
++    reg [1:0] group_code;
++    reg [7:0] frame_count;
++    reg sof_d;
++    assign O_error_led = (group_code!=0) && !slot[0] && (slot < {group_code,1'b0});
++    always @(posedge I_clk or negedge I_rst_n) begin
++        if(!I_rst_n) begin
++            tick_count<=0; slot<=19; group_code<=0;
++            frame_count<=0; O_heartbeat<=0; sof_d<=0;
++        end else begin
++            sof_d<=I_sof;
++            if(I_sof && !sof_d) begin
++                if(frame_count==HEARTBEAT_FRAMES-1) begin
++                    frame_count<=0; O_heartbeat<=!O_heartbeat;
++                end else frame_count<=frame_count+1'b1;
++            end
++            if(tick_count==TICK_CYCLES-1) begin
++                tick_count<=0;
++                if(slot==19) begin slot<=0; group_code<=I_error_code; end
++                else slot<=slot+1'b1;
++            end else tick_count<=tick_count+1'b1;
++        end
++    end
++endmodule
+--- before/user_source/hdl_source/design_top_wrapper.v
++++ after/user_source/hdl_source/design_top_wrapper.v
+@@ -3,7 +3,7 @@
+ module design_top_wrapper (
+     input wire        I_sys_clk,
+     input wire        I_rst_n,
+-    output wire [0:0] LED,
++    output wire [3:0] LED,
+       
+     output wire       O_cam_scl,
+     inout  wire       IO_cam_sda,
+@@ -622,6 +622,7 @@
+     // Detector only mirrors the ISP bus; zero-latency wires feed video_in.
+     wire [127:0] S_detect_tdata;
+     wire S_detect_tvalid, S_detect_tuser, S_detect_tlast;
++    wire [1:0] S_detect_error;
+     wire S_detect_rst_n = I_rst_n & S_rst_n;
+     reg [1:0] S_detect_reset_sync;
+     always @(posedge S_csi_rx_clk or negedge S_detect_rst_n) begin
+@@ -634,7 +635,13 @@
+         .S_AXIS_tuser(S_ISP_O_tuser), .S_AXIS_tlast(S_ISP_O_tlast),
+         .M_AXIS_tdata(S_detect_tdata), .M_AXIS_tvalid(S_detect_tvalid),
+         .M_AXIS_tuser(S_detect_tuser), .M_AXIS_tlast(S_detect_tlast),
+-        .O_ball_detected(LED[0]), .O_frame_done(), .O_frame_hit(), .O_fault()
++        .O_ball_detected(LED[0]), .O_frame_done(), .O_frame_hit(), .O_fault(),
++        .O_bright(LED[2]), .O_error_code(S_detect_error)
++    );
++    steel_ball_status_led u_detect_status (
++        .I_clk(S_csi_rx_clk), .I_rst_n(S_detect_reset_sync[1]),
++        .I_sof(S_ISP_O_tuser), .I_error_code(S_detect_error),
++        .O_heartbeat(LED[1]), .O_error_led(LED[3])
+     );
+ 
+     video_in u_video_in(
+--- before/user_source/constraints_source/pin.adc
++++ after/user_source/constraints_source/pin.adc
+@@ -20,3 +20,6 @@
+ 
+ # Official board LED0, active high.
+ set_pin_assignment { LED[0] } { LOCATION = D10; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
++set_pin_assignment { LED[1] } { LOCATION = E10; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
++set_pin_assignment { LED[2] } { LOCATION = C6; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
++set_pin_assignment { LED[3] } { LOCATION = D6; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }

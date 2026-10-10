@@ -1,0 +1,78 @@
+--- 1080p_reference/user_source/hdl_source/design_top_wrapper.v
++++ user_source/hdl_source/design_top_wrapper.v
+@@ -3,6 +3,7 @@
+ module design_top_wrapper (
+     input wire        I_sys_clk,
+     input wire        I_rst_n,
++    output wire [0:0] LED,
+       
+     output wire       O_cam_scl,
+     inout  wire       IO_cam_sda,
+@@ -618,13 +619,31 @@
+   );
+ 
+ 
++    // Detector only mirrors the ISP bus; zero-latency wires feed video_in.
++    wire [127:0] S_detect_tdata;
++    wire S_detect_tvalid, S_detect_tuser, S_detect_tlast;
++    wire S_detect_rst_n = I_rst_n & S_rst_n;
++    reg [1:0] S_detect_reset_sync;
++    always @(posedge S_csi_rx_clk or negedge S_detect_rst_n) begin
++        if(!S_detect_rst_n) S_detect_reset_sync <= 2'b00;
++        else S_detect_reset_sync <= {S_detect_reset_sync[0],1'b1};
++    end
++    steel_ball_detect #(.IMG_WIDTH(1920), .IMG_HEIGHT(1080)) u_steel_ball_detect (
++        .I_clk(S_csi_rx_clk), .I_rst_n(S_detect_reset_sync[1]),
++        .S_AXIS_tdata(S_ISP_O_tdata), .S_AXIS_tvalid(S_ISP_O_tvalid),
++        .S_AXIS_tuser(S_ISP_O_tuser), .S_AXIS_tlast(S_ISP_O_tlast),
++        .M_AXIS_tdata(S_detect_tdata), .M_AXIS_tvalid(S_detect_tvalid),
++        .M_AXIS_tuser(S_detect_tuser), .M_AXIS_tlast(S_detect_tlast),
++        .O_ball_detected(LED[0]), .O_frame_done(), .O_frame_hit(), .O_fault()
++    );
++
+     video_in u_video_in(
+         .I_rst_n              (  S_rst_n             ),
+ 
+         .I_camera_clk         ( S_csi_rx_clk          ),
+-        .I_camera_frame_start ( S_ISP_O_tuser  ),
+-        .I_camera_valid       ( S_ISP_O_tvalid ),
+-        .I_camera_data        ( S_ISP_O_tdata  ),
++        .I_camera_frame_start ( S_detect_tuser  ),
++        .I_camera_valid       ( S_detect_tvalid ),
++        .I_camera_data        ( S_detect_tdata  ),
+         .I_mipi_rx_error      ( 1'b0			      ),
+ 
+         .I_ddr_clk            ( S_ddr_clk             ),
+--- 1080p_reference/user_source/constraints_source/pin.adc
++++ user_source/constraints_source/pin.adc
+@@ -17,3 +17,6 @@
+ set_pin_assignment	{ O_tmds_clk_p }		{ LOCATION = C17; IOSTANDARD = TMDS33; PULLTYPE = NONE; }
+ 
+ 
++
++# Official board LED0, active high.
++set_pin_assignment { LED[0] } { LOCATION = D10; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+--- 1080p_reference/td_project/camera_to_dsi_display.al
++++ td_project/camera_to_dsi_display.al
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+-<Project Version="3" Minor="2" Path="D:/AAAProject/FPGA/HX1P35A_Contest_202606/7_lab_ex_2026_nosoft/lab_hd_1_mipi_hdmi_1080p/td_project">
++<Project Version="3" Minor="2" Path="D:/AAAProject/FPGA/HX1P35A_Contest_202606/exercise/lab_hd_1_mipi_hdmi_1080p_steel_ball/td_project">
+     <Project_Created_Time></Project_Created_Time>
+     <TD_Encoding>UTF-8</TD_Encoding>
+     <TD_Version>6.2.168116</TD_Version>
+@@ -289,6 +289,14 @@
+                     <Attr Name="UsedInP&R" Val="true"/>
+                     <Attr Name="BelongTo" Val="design_1"/>
+                     <Attr Name="CompileOrder" Val="50"/>
++                </FileInfo>
++            </File>
++            <File Path="../user_source/hdl_source/steel_ball_detect.v">
++                <FileInfo>
++                    <Attr Name="UsedInSyn" Val="true"/>
++                    <Attr Name="UsedInP&R" Val="true"/>
++                    <Attr Name="BelongTo" Val="design_1"/>
++                    <Attr Name="CompileOrder" Val="51"/>
+                 </FileInfo>
+             </File>
+         </Verilog>

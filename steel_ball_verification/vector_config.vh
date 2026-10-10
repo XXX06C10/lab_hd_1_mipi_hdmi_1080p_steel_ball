@@ -1,0 +1,2 @@
+`define NCLOCKS 1302859
+`define NFRAMES 30
